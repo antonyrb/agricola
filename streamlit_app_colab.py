@@ -17,7 +17,7 @@ st.set_page_config(
 # ------------------------------
 @st.cache_data
 def load_data():
-    return pd.read_csv("dataset.csv")  # Cambia el nombre si tu archivo es distinto
+    return pd.read_csv("datos.csv")  # Cambia el nombre si tu archivo es distinto
 
 data = load_data()
 
