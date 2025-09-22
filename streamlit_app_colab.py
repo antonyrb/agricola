@@ -1,4 +1,4 @@
-%%bash
+
 cat > streamlit_app_colab.py <<'PY'
 # streamlit_app_colab.py
 import streamlit as st
