@@ -58,6 +58,7 @@ st.sidebar.header("Configuración")
 st.sidebar.markdown(f"*Filas:* {data.shape[0]}  \n*Columnas:* {data.shape[1]}")
 
 
+
 if df.shape[0] < 50:
     st.info("Nota: el dataset tiene menos de 50 filas; los resultados de modelado pueden no ser representativos.")
 
