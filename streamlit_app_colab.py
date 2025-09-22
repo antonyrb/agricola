@@ -1,248 +1,150 @@
-"""
-Streamlit app adaptada para ejecución en Google Colab (con ngrok).
-Esta versión selecciona por defecto 'label' como target si existe en el CSV
-y selecciona automáticamente todas las features (excepto el target).
-Guarda este archivo como streamlit_app_colab.py y súbelo a Colab junto con datos.csv.
-"""
-
+%%bash
+cat > streamlit_app_colab.py <<'PY'
+# streamlit_app_colab.py
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import os
-from io import BytesIO
+import seaborn as sns
 import joblib
-
+from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.pipeline import Pipeline
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.impute import SimpleImputer
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, r2_score, mean_squared_error
+from sklearn.preprocessing import StandardScaler
+from sklearn.compose import ColumnTransformer
+from sklearn.metrics import accuracy_score, classification_report
 
-st.set_page_config(page_title="Explorador & ML (Colab)", layout="wide")
+st.set_page_config(page_title="Recomendador de Cultivos", layout="wide")
 
 @st.cache_data
-def load_data(uploaded_file):
-    if uploaded_file is not None:
-        return pd.read_csv(uploaded_file)
-    default_path = os.path.join(os.getcwd(), "datos.csv")
-    if os.path.exists(default_path):
-        return pd.read_csv(default_path)
-    return pd.DataFrame()
-
-def summary_dataframe(df):
-    return pd.DataFrame({
-        "dtype": df.dtypes.astype(str),
-        "n_unique": df.nunique(),
-        "n_missing": df.isnull().sum(),
-    })
-
-def get_feature_names(preprocessor, numeric_cols, categorical_cols):
-    feat_names = []
-    feat_names += numeric_cols
+def load_data(path="datos.csv"):
     try:
-        ohe = preprocessor.named_transformers_['cat'].named_steps['onehot']
-        ohe_names = ohe.get_feature_names_out(categorical_cols).tolist()
-        feat_names += ohe_names
+        return pd.read_csv(path)
     except Exception:
-        feat_names += categorical_cols
-    return feat_names
+        return pd.DataFrame()
 
-st.title("Explorador de datos y entrenamiento rápido")
-st.sidebar.header("Configuración")
+data = load_data()
 
+if data.empty:
+    st.title("❗ No se encontró 'datos.csv' en el directorio")
+    st.write("Sube un `datos.csv` al entorno o ponlo en la raíz del repo antes de desplegar.")
+    st.stop()
 
+st.title("🌱 Panel interactivo — Recomendador de Cultivos")
+st.markdown("Explora cómo las condiciones de suelo y clima se relacionan con el cultivo ideal.")
 
-st.sidebar.markdown(f"*Filas:* {df.shape[0]}  \n*Columnas:* {df.shape[1]}")
+# Sidebar información
+st.sidebar.header("Información del dataset")
+st.sidebar.markdown(f"- Filas: **{data.shape[0]}**  \n- Columnas: **{data.shape[1]}**")
+if 'label' in data.columns:
+    st.sidebar.markdown(f"- Target detectado: **label** (valores: {data['label'].nunique()})")
+else:
+    st.sidebar.markdown("- **No se encontró la columna `label`**")
 
+# Mostrar tabla y estadísticas
+with st.expander("📊 Ver dataset (primeras filas)"):
+    st.dataframe(data.head(50))
 
+st.subheader("🔍 Estadísticas descriptivas")
+st.write(data.describe(include='all').T)
 
+# Comprobar columna target
+if 'label' not in data.columns:
+    st.error("El dataset debe contener la columna `label` con el tipo de cultivo. Añádela y vuelve a ejecutar.")
+    st.stop()
 
-if df.shape[0] < 50:
-    st.info("Nota: el dataset tiene menos de 50 filas; los resultados de modelado pueden no ser representativos.")
+# Seleccionar columnas numéricas para el modelo automático
+features = [c for c in data.columns if c != 'label']
+num_features = data[features].select_dtypes(include=[np.number]).columns.tolist()
+non_num = [c for c in features if c not in num_features]
+if non_num:
+    st.warning(f"Columnas no numéricas (serán ignoradas para el modelo): {non_num}")
 
-tab1, tab2, tab3, tab4 = st.tabs(["Datos", "Visualizaciones", "Filtrar & Descargar", "Modelado"])
+if len(num_features) == 0:
+    st.error("No hay columnas numéricas para entrenar el modelo. Revisa el dataset.")
+    st.stop()
 
-with tab1:
-    st.header("Vista rápida del dataset")
-    st.write("Resumen de columnas:")
-    st.dataframe(summary_dataframe(df))
-    st.write("Primeros registros:")
-    st.dataframe(df.head(20))
-    if st.checkbox("Mostrar información completa (info())"):
-        import io
-        buf = io.StringIO()
-        df.info(buf=buf)
-        st.text(buf.getvalue())
+# Preprocesado y pipeline
+X = data[num_features].copy()
+y = data['label'].copy()
+le = LabelEncoder()
+y_enc = le.fit_transform(y)
 
-with tab2:
-    st.header("Visualizaciones básicas")
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    categorical_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
+preprocessor = ColumnTransformer(
+    transformers=[
+        ("num", Pipeline([("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler())]), num_features)
+    ],
+    remainder='drop'
+)
 
-    st.subheader("Histogramas")
-    sel_hist = st.multiselect("Seleccionar columnas (numéricas) para histogramas", numeric_cols, default=(numeric_cols[:2] if len(numeric_cols)>=2 else numeric_cols))
-    for col in sel_hist:
-        fig, ax = plt.subplots()
-        df[col].hist(ax=ax)
-        ax.set_title(f"Histograma — {col}")
-        st.pyplot(fig)
+model_pipeline = Pipeline([("preprocessor", preprocessor),
+                           ("clf", RandomForestClassifier(n_estimators=100, random_state=42))])
 
-    st.subheader("Scatter (x vs y)")
-    if len(numeric_cols) >= 2:
-        x_col = st.selectbox("Eje X", numeric_cols, index=0)
-        y_col = st.selectbox("Eje Y", numeric_cols, index=1 if len(numeric_cols)>1 else 0)
-        fig, ax = plt.subplots()
-        ax.scatter(df[x_col], df[y_col], s=10)
-        ax.set_xlabel(x_col)
-        ax.set_ylabel(y_col)
-        ax.set_title(f"{y_col} vs {x_col}")
-        st.pyplot(fig)
-    else:
-        st.info("Se requieren al menos 2 columnas numéricas para scatter.")
+# Entrenar y evaluar
+try:
+    strat = y_enc if len(np.unique(y_enc))>1 else None
+    X_train, X_test, y_train, y_test = train_test_split(X, y_enc, test_size=0.25, random_state=42, stratify=strat)
+    model_pipeline.fit(X_train, y_train)
+    y_pred = model_pipeline.predict(X_test)
+    acc = accuracy_score(y_test, y_pred)
+except Exception as e:
+    st.error(f"Error al entrenar/evaluar el modelo: {e}")
+    st.stop()
 
-    st.subheader("Mapa de correlación (numéricas)")
-    if len(numeric_cols) >= 2:
-        corr = df[numeric_cols].corr()
-        fig, ax = plt.subplots(figsize=(6, 4))
-        cax = ax.matshow(corr)
-        fig.colorbar(cax)
-        ax.set_xticks(range(len(corr.columns)))
-        ax.set_yticks(range(len(corr.columns)))
-        ax.set_xticklabels(corr.columns, rotation=90)
-        ax.set_yticklabels(corr.columns)
-        st.pyplot(fig)
-    else:
-        st.info("No hay suficientes columnas numéricas para calcular correlación.")
+# Métricas
+st.subheader("📈 Desempeño del modelo")
+st.write(f"- Accuracy (test): **{acc:.3f}**")
+st.text(classification_report(y_test, y_pred, target_names=le.classes_))
 
-with tab3:
-    st.header("Filtrado interactivo y descarga")
-    st.write("Selecciona filtros por columnas (se genera automáticamente)")
-    df_filtered = df.copy()
-    with st.form("filters_form"):
-        for col in df.columns:
-            if df[col].dtype.kind in 'biufc':
-                min_val = float(df[col].min())
-                max_val = float(df[col].max())
-                lo, hi = st.slider(f"{col} (rango)", min_val, max_val, (min_val, max_val))
-                df_filtered = df_filtered[(df_filtered[col] >= lo) & (df_filtered[col] <= hi)]
-            else:
-                vals = df[col].dropna().unique().tolist()
-                sel = st.multiselect(f"{col} (valores)", vals, default=vals[:5])
-                if sel:
-                    df_filtered = df_filtered[df_filtered[col].isin(sel)]
-        submitted = st.form_submit_button("Aplicar filtros")
-    st.write(f"Filtrado: {df_filtered.shape[0]} filas resultantes")
-    st.dataframe(df_filtered.head(50))
-    csv_bytes = df_filtered.to_csv(index=False).encode('utf-8')
-    st.download_button("Descargar subset filtrado (CSV)", data=csv_bytes, file_name="subset_filtrado.csv", mime="text/csv")
+# Importancia de features
+try:
+    importances = model_pipeline.named_steps['clf'].feature_importances_
+    fi = pd.DataFrame({"feature": num_features, "importance": importances}).sort_values("importance", ascending=False)
+    st.subheader("🧾 Importancia de variables (top)")
+    st.bar_chart(fi.set_index("feature")["importance"])
+except Exception:
+    st.info("No fue posible calcular importancias de features.")
 
-with tab4:
-    st.header("Entrenamiento rápido de modelo")
-    st.write("Selecciona la columna objetivo (target). Esta versión intentará seleccionar 'label' por defecto y todas las features automáticamente.")
-    cols = df.columns.tolist()
+# Exploración gráfica interactiva
+st.subheader("🔎 Exploración por variable y cultivo")
+col = st.selectbox("Selecciona variable", num_features)
+fig, ax = plt.subplots(figsize=(8,4))
+sns.boxplot(x="label", y=col, data=data, ax=ax)
+ax.set_title(f"{col} por cultivo")
+plt.xticks(rotation=45)
+st.pyplot(fig)
 
-    default_idx = 0
-    try:
-        idx_in_cols = cols.index('label')
-        default_idx = idx_in_cols + 1
-    except ValueError:
-        default_idx = 0
+# Panel de predicción interactiva
+st.subheader("🌾 Recomendar cultivo según condiciones")
+st.write("Ajusta las condiciones de suelo y clima. Los valores por defecto son la mediana del dataset.")
 
-    target = st.selectbox("Columna objetivo (target)", options=["--NINGUNO--"] + cols, index=default_idx)
-    if target and target != "--NINGUNO--":
-        target_series = df[target]
-        n_unique = target_series.nunique(dropna=True)
-        is_numeric_target = pd.api.types.is_numeric_dtype(target_series)
-        task = "clasificación" if (not is_numeric_target or n_unique <= 20) else "regresión"
-        st.info(f"Se detectó tarea: {task} (unique={n_unique}, dtype={target_series.dtype})")
+input_values = {}
+cols = st.columns(3)
+for i, feature in enumerate(num_features):
+    minv = float(data[feature].min())
+    maxv = float(data[feature].max())
+    med = float(data[feature].median())
+    with cols[i % 3]:
+        if data[feature].dtype.kind in 'iu' and (med).is_integer():
+            val = st.slider(feature, int(np.floor(minv)), int(np.ceil(maxv)), int(med))
+        else:
+            step = (maxv - minv) / 100 if (maxv - minv) != 0 else 0.1
+            val = st.slider(feature, float(minv), float(maxv), float(med), step=step)
+    input_values[feature] = val
 
-        features = [c for c in cols if c != target]
-        sel_features = st.multiselect("Seleccionar features", features, default=features)
+if st.button("🔎 Recomendar cultivo"):
+    input_df = pd.DataFrame([input_values], columns=num_features)
+    pred_enc = model_pipeline.predict(input_df)
+    pred_label = le.inverse_transform(pred_enc)[0]
+    st.success(f"✅ Cultivo recomendado: **{pred_label}**")
+    st.write("Valores ingresados:")
+    st.table(input_df.T)
 
-        test_size = st.slider("Proporción test", 0.1, 0.5, 0.25)
-        n_estimators = st.slider("n_estimators (RandomForest)", 10, 500, 100)
-        random_state = st.number_input("random_state", value=42, step=1)
-
-        if st.button("Entrenar modelo"):
-            with st.spinner("Entrenando..."):
-                X = df[sel_features].copy()
-                y = df[target].copy()
-
-                numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-                categorical_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
-
-                num_pipeline = Pipeline([
-                    ("imputer", SimpleImputer(strategy="median")),
-                    ("scaler", StandardScaler()),
-                ]) if numeric_cols else None
-
-                cat_pipeline = Pipeline([
-                    ("imputer", SimpleImputer(strategy="most_frequent")),
-                    ("onehot", OneHotEncoder(handle_unknown="ignore", sparse=False))
-                ]) if categorical_cols else None
-
-                transformers = []
-                if numeric_cols:
-                    transformers.append(("num", num_pipeline, numeric_cols))
-                if categorical_cols:
-                    transformers.append(("cat", cat_pipeline, categorical_cols))
-
-                preprocessor = ColumnTransformer(transformers=transformers)
-
-                ModelClass = RandomForestClassifier if task == "clasificación" else RandomForestRegressor
-                model = Pipeline([
-                    ("preprocessor", preprocessor),
-                    ("estimator", ModelClass(n_estimators=n_estimators, random_state=int(random_state)))
-                ])
-
-                mask = y.notnull()
-                X = X[mask]
-                y = y[mask]
-
-                for c in categorical_cols:
-                    X[c] = X[c].astype(str)
-
-                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=int(random_state))
-
-                model.fit(X_train, y_train)
-                y_pred = model.predict(X_test)
-
-                if task == "clasificación":
-                    acc = accuracy_score(y_test, y_pred)
-                    st.success(f"Accuracy en test: {acc:.4f}")
-                    st.write("Reporte de clasificación:")
-                    st.text(classification_report(y_test, y_pred))
-
-                    cm = confusion_matrix(y_test, y_pred)
-                    st.write("Matriz de confusión:")
-                    st.dataframe(pd.DataFrame(cm, index=np.unique(y_test), columns=np.unique(y_test)))
-                else:
-                    r2 = r2_score(y_test, y_pred)
-                    rmse = mean_squared_error(y_test, y_pred, squared=False)
-                    st.success(f"R2: {r2:.4f} — RMSE: {rmse:.4f}")
-
-                try:
-                    feat_names = get_feature_names(model.named_steps['preprocessor'], numeric_cols, categorical_cols)
-                except Exception:
-                    feat_names = sel_features
-                try:
-                    importances = model.named_steps['estimator'].feature_importances_
-                    fi = pd.DataFrame({"feature": feat_names, "importance": importances})
-                    fi = fi.sort_values("importance", ascending=False).head(30)
-                    st.write("Importancia de features (top):")
-                    st.dataframe(fi.reset_index(drop=True))
-                except Exception as e:
-                    st.info("No fue posible extraer importancias de features: " + str(e))
-
-                model_path = "modelo_entrenado.joblib"
-                joblib.dump(model, model_path)
-                with open(model_path, "rb") as f:
-                    st.download_button("Descargar modelo entrenado (.joblib)", f, file_name=model_path, mime="application/octet-stream")
-    else:
-        st.info("Seleccione una columna objetivo para activar el panel de modelado.")
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("❤️ ")
+# Descargar modelo
+if st.button("💾 Descargar modelo (.joblib)"):
+    joblib.dump(model_pipeline, "modelo_recomendador.joblib")
+    with open("modelo_recomendador.joblib", "rb") as f:
+        st.download_button("Descargar modelo", data=f, file_name="modelo_recomendador.joblib", mime="application/octet-stream")
+PY
