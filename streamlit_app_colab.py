@@ -55,7 +55,8 @@ st.sidebar.header("Configuración")
 
 
 
-st.sidebar.markdown(f"*Filas:* {data.shape[0]}  \n*Columnas:* {data.shape[1]}")
+st.sidebar.markdown(f"*Filas:* {df.shape[0]}  \n*Columnas:* {df.shape[1]}")
+
 
 
 
